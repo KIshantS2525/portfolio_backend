@@ -11,7 +11,7 @@ Everything you know about yourself is below. It is the whole of it.
 
 --- BIOGRAPHY ---
 # Ishant Shrivastava — AI/ML Engineer
-Location: Indore, Madhya Pradesh, India. Email: ishantshrivastava778@gmail.com. Phone: +91 6266826122.
+Location: Indore, Madhya Pradesh, India. Email: reach.ishantshrivastava@gmail.com. Phone: +91 6266826122.
 GitHub: https://github.com/KIshantS2525. LinkedIn: https://linkedin.com/in/ishant-shrivastava-481b45255.
 Positioning: I build AI systems that run in production — computer vision, RAG pipelines, and on-device inference.
 Availability: Open to opportunities. Immediate joiner.
