@@ -26,6 +26,7 @@ from pydantic import BaseModel
 load_dotenv()
 
 from admin import public_router, router as admin_router  # noqa: E402  (needs env loaded first)
+from guard import Canary, rules, screen_question  # noqa: E402
 
 BASE = Path(__file__).parent
 MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
@@ -42,7 +43,14 @@ KEYS = [k.strip() for k in os.getenv("GEMINI_API_KEY", "").split(",") if k.strip
 # Generated from the frontend's lib/content.ts by `npm run export-bio`.
 # There is one content layer; never edit this file by hand.
 BIO_PATH = BASE / "biography.txt"
-SYSTEM_PROMPT = BIO_PATH.read_text(encoding="utf-8") if BIO_PATH.exists() else ""
+BIOGRAPHY = BIO_PATH.read_text(encoding="utf-8") if BIO_PATH.exists() else ""
+
+# The scope rules go in front of the biography, not into it: biography.txt is
+# generated from the frontend's content layer and is overwritten by
+# `npm run export-bio`, so anything written there would be silently lost on the
+# next content edit. Rails live in code.
+_CANARY = Canary()
+SYSTEM_PROMPT = (rules(_CANARY) + BIOGRAPHY) if BIOGRAPHY else ""
 
 app = FastAPI(title="Ishant portfolio — Ask AI", docs_url=None, redoc_url=None)
 app.add_middleware(
@@ -107,7 +115,7 @@ async def chat(body: ChatRequest, request: Request):
             "Everything else on this page works."
         )
 
-    if not SYSTEM_PROMPT:
+    if not BIOGRAPHY:
         return PlainTextResponse(
             "The chat has no biography loaded. Run `npm run export-bio` in the frontend "
             "to generate backend/biography.txt, then restart this server."
@@ -131,6 +139,18 @@ async def chat(body: ChatRequest, request: Request):
 
     if not contents:
         return PlainTextResponse("Ask a question and I will answer it.")
+
+    # Guard rail 1: deterministic screen of the latest question, before any
+    # token is spent. Only the newest turn — screening the whole history would
+    # re-refuse a conversation forever over one bad message in it, and would
+    # let an attacker poison the transcript and then refer back to it.
+    latest = next(
+        (m.content for m in reversed(body.messages) if m.role != "assistant" and m.content),
+        "",
+    )
+    refusal = screen_question(latest)
+    if refusal:
+        return PlainTextResponse(refusal)
 
     payload = {
         "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
@@ -167,6 +187,8 @@ async def chat(body: ChatRequest, request: Request):
                                 if last_status == 429:
                                     break  # quota — move to the next key
                                 continue
+                            leak = Canary()
+                            leak.token = _CANARY.token
                             async for line in resp.aiter_lines():
                                 if not line.startswith("data:"):
                                     continue
@@ -180,8 +202,23 @@ async def chat(body: ChatRequest, request: Request):
                                 for cand in data.get("candidates", []):
                                     for part in cand.get("content", {}).get("parts", []):
                                         text = part.get("text")
-                                        if text:
-                                            yield text
+                                        if not text:
+                                            continue
+                                        # Guard rail 3: the backstop. If the
+                                        # canary from the system prompt turns
+                                        # up in the output, the prompt has
+                                        # been extracted — cut the stream
+                                        # mid-sentence rather than finish it.
+                                        # Checked across a rolling window, so
+                                        # a token split over two chunks is
+                                        # still caught.
+                                        if leak.leaked(text):
+                                            yield (
+                                                "\n\n[ stopped — that answer was "
+                                                "drifting out of scope ]"
+                                            )
+                                            return
+                                        yield text
                             return
                     except httpx.HTTPError:
                         last_status = 0
